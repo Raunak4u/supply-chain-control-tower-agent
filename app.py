@@ -1,54 +1,53 @@
-import gradio as gr
+import streamlit as st
 import pandas as pd
-import pickle
+import plotly.express as px
 
-# Load model safely
+# Import your tools if available
 try:
-    with open("model.pkl", "rb") as f:
-        md = pickle.load(f)
-    model = md['model'] if isinstance(md, dict) and 'model' in md else md
-    print("Model loaded")
+    import tools
+except:
+    pass
+
+st.set_page_config(page_title="Supply Chain Control Tower", page_icon="📦", layout="wide")
+
+st.title("📦 Supply Chain Control Tower Agent")
+st.markdown("**Agentic AI Supply Chain Risk Dashboard** | Built by Raunak Kumar")
+
+# Load data
+try:
+    df = pd.read_csv("test_orders.csv")
+    st.success(f"Loaded {len(df)} orders")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Orders", len(df))
+    col2.metric("At Risk", len(df[df['risk_score'] > 70]) if 'risk_score' in df.columns else "N/A")
+    col3.metric("Delayed", len(df[df['status'] == 'Delayed']) if 'status' in df.columns else "N/A")
+    col4.metric("On Time", len(df[df['status'] == 'On Time']) if 'status' in df.columns else "N/A")
+
+    st.subheader("📊 Order Overview")
+    st.dataframe(df, use_container_width=True)
+    
+    if 'risk_score' in df.columns:
+        fig = px.histogram(df, x="risk_score", title="Risk Score Distribution")
+        st.plotly_chart(fig, use_container_width=True)
+
 except Exception as e:
-    model = None
-    print(f"Model load failed, using rule: {e}")
+    st.warning(f"Showing demo data - {e}")
+    # Fallback demo
+    demo = pd.DataFrame({
+        "Order ID": ["ORD001", "ORD002", "ORD003"],
+        "Origin": ["Mumbai", "Delhi", "Chennai"],
+        "Destination": ["Dubai", "Singapore", "USA"],
+        "Risk Score": [85, 45, 92],
+        "Status": ["At Risk", "On Time", "Delayed"]
+    })
+    st.dataframe(demo, use_container_width=True)
 
-def process_upload(file_path):
-    if not file_path:
-        return "Please upload CSV file"
-    try:
-        df = pd.read_csv(file_path, encoding='latin-1')
-        result = ""
-        for idx, row in df.head(5).iterrows():
-            oid = row.get('Order Id', idx)
-            ship = str(row.get('Shipping Mode', 'Standard Class'))
-            cat = str(row.get('Category', 'Office Supplies'))
-            
-            # Simple smart rule - 100% working
-            if "Standard" in ship or "Second" in ship:
-                risk = "HIGH RISK (1)"
-            else:
-                risk = "LOW RISK (0)"
-            
-            result += f"\n### Order {oid}\n"
-            result += f"**Late delivery risk:** {risk}\n"
-            result += f"**Shipping Mode:** {ship} | **Category:** {cat}\n\n"
-            
-            if "HIGH" in risk:
-                result += f"**Alternative Shipping Tool:** Upgrade to First Class (+$15)\n\n"
-                result += f"**Inventory Impact Tool:** Category {cat} - check safety stock\n\n"
-                result += f"**Final Action Plan:** Upgrade Order {oid} to faster shipping, inform customer proactively.\n"
-            else:
-                result += f"**Action:** No upgrade needed, monitor order.\n"
-            result += "\n---\n"
-        return result
-    except Exception as e:
-        return f"Error: {e}"
+st.subheader("🤖 Agentic AI Analysis")
+user_query = st.text_input("Ask about supply chain risk (e.g., Which orders are at high risk?)")
+if user_query:
+    with st.spinner("Analyzing..."):
+        st.info(f"**AI Agent Response for:** '{user_query}'\n\nBased on test_orders.csv, 2 orders are high risk due to geopolitical and weather disruptions. Recommended action: Reroute via alternate hub and notify supplier. (This is demo logic - connect your LLM here)")
 
-with gr.Blocks(title="Supply Chain Control Tower Agent") as demo:
-    gr.Markdown("# Supply Chain Control Tower Agent\nAgentic AI - Predicts late-delivery risk")
-    file_input = gr.File(label="Upload new orders CSV", file_types=[".csv"], type="filepath")
-    btn = gr.Button("Check Delivery Risk with AI Agent", variant="primary")
-    output = gr.Markdown()
-    btn.click(fn=process_upload, inputs=file_input, outputs=output)
-
-demo.launch()
+st.sidebar.title("Controls")
+st.sidebar.info("GitHub: Raunak4u/supply-chain-control-tower-agent\nHuggingFace: RAUNAK-KUMAR/supply-chain-control-tower-agent")
