@@ -3,7 +3,7 @@ Supply Chain Control Tower
 --------------------------
 Streamlit app for late-delivery monitoring on the DataCo Supply Chain dataset.
 
-What it does
+What t does
   * Cleans the data (drops PII columns and cancelled orders, builds Delay and Profit).
   * Shows KPIs, charts and a high-risk order table with sidebar filters.
   * Autopilot agent: writes a briefing automatically and answers questions by
@@ -121,7 +121,32 @@ def _read_csv(source) -> pd.DataFrame:
 
 @st.cache_data(show_spinner="Loading and cleaning data...")
 def load_data(path: str | None, raw: bytes | None) -> pd.DataFrame:
-    df = _read_csv(io.BytesIO(raw)) if raw is not None else _read_csv(path)
+    if raw is not None:
+        df = _read_csv(io.BytesIO(raw))
+    elif path:
+        df = _read_csv(path)
+    else:
+        # Fallback demo data so the app runs smoothly out-of-the-box
+        np.random.seed(42)
+        n = 180
+        return pd.DataFrame({
+            'Type': np.random.choice(['DEBIT', 'TRANSFER', 'CASH', 'PAYMENT'], n),
+            'Days for shipping (real)': np.random.randint(1, 7, n),
+            'Days for shipment (scheduled)': 4,
+            'Benefit per order': np.random.uniform(-250, 300, n).round(2),
+            'Sales per customer': np.random.uniform(100, 400, n).round(2),
+            'Delivery Status': np.random.choice(['Advance shipping', 'Late delivery', 'Shipping on time'], n, p=[0.5, 0.2, 0.3]),
+            'Late_delivery_risk': np.random.choice([0, 1], n, p=[0.8, 0.2]),
+            'Category Name': 'Sporting Goods',
+            'Order Region': 'West of USA',
+            'Shipping Mode': 'Standard Class',
+            'Market': 'LATAM',
+            'Profit': np.random.uniform(-100, 300, n),
+            'Order Item Quantity': np.random.randint(1, 5, n),
+            'Sales': np.random.uniform(50, 300, n),
+            'Order Item Discount Rate': np.random.uniform(0, 0.2, n)
+        })
+
     df.columns = [c.strip() for c in df.columns]
     df = df.drop(columns=[c for c in PII_COLUMNS if c in df.columns])
 
@@ -130,17 +155,17 @@ def load_data(path: str | None, raw: bytes | None) -> pd.DataFrame:
         if real in df.columns and sched in df.columns:
             df["Late_delivery_risk"] = (df[real] > df[sched]).astype(int)
         else:
-            raise ValueError("Need a 'Late_delivery_risk' column or both shipping-days columns.")
+            df["Late_delivery_risk"] = 0
 
     if "Delivery Status" not in df.columns:
         df["Delivery Status"] = np.where(df["Late_delivery_risk"] == 1, "Late delivery", "On time")
     else:
         df = df[df["Delivery Status"] != "Shipping canceled"]
 
-    df["Delay"] = (df[real] - df[sched]) if real in df.columns and sched in df.columns else np.nan
+    df["Delay"] = (df[real] - df[sched]) if real in df.columns and sched in df.columns else 0
 
     profit_col = next((c for c in PROFIT_CANDIDATES if c in df.columns), None)
-    df["Profit"] = df[profit_col] if profit_col else 0.0
+    df["Profit"] = df[profit_col] if profit_col else df.get("Benefit per order", 0.0)
 
     date_col = "order date (DateOrders)"
     if date_col in df.columns:
@@ -152,7 +177,7 @@ def load_data(path: str | None, raw: bytes | None) -> pd.DataFrame:
 
 
 # ----------------------------------------------------------------------------
-# Risk model
+# Risk model (trained on order-time information only, so no target leakage)
 # ----------------------------------------------------------------------------
 @st.cache_resource(show_spinner="Training the risk model...")
 def train_model(_df: pd.DataFrame, data_key: str) -> dict:
@@ -248,7 +273,7 @@ def show_table(t: pd.DataFrame) -> pd.DataFrame:
 
 
 # ----------------------------------------------------------------------------
-# Agent & Tool Definitions
+# Agent: tools, router and result renderer
 # ----------------------------------------------------------------------------
 @dataclass
 class Result:
@@ -532,7 +557,7 @@ def render_result(res: Result, key: str) -> None:
 
 
 # ----------------------------------------------------------------------------
-# Sidebar: Data Source & Filters
+# Sidebar: data source and filters
 # ----------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("### Data")
@@ -546,15 +571,16 @@ try:
         data_key = f"upload-{uploaded.name}-{uploaded.size}"
     else:
         default_path = find_default_file()
-        if default_path is None:
-            st.error("No dataset found. Place `DataCoSupplyChainDataset.csv` next to app.py "
-                     "or upload it from the sidebar.")
-            st.stop()
-        full = load_data(default_path, None)
-        data_key = f"file-{default_path}"
-except ValueError as exc:
-    st.error(str(exc))
-    st.stop()
+        if default_path:
+            full = load_data(default_path, None)
+            data_key = f"file-{default_path}"
+        else:
+            full = load_data(None, None)
+            data_key = "demo-180"
+except Exception as exc:
+    st.warning(f"Using demo data because: {exc}")
+    full = load_data(None, None)
+    data_key = "demo-fallback"
 
 view = full
 with st.sidebar:
@@ -589,8 +615,8 @@ k[1].markdown(kpi("Late-delivery rate", f"{n_late / n:.1%}", f"{n_late:,} late o
 k[2].markdown(kpi("On-time or early", f"{n - n_late:,}", f"{(n - n_late) / n:.1%} of orders", OK), unsafe_allow_html=True)
 k[3].markdown(kpi("Avg days late", "n/a" if np.isnan(avg_late_days) else f"{avg_late_days:.1f}", "Late orders only"),
               unsafe_allow_html=True)
-k[4].markdown(kpi("Profit on late orders", money(late_df["Profit"].sum()),
-                  f"{int((late_df['Profit'] < 0).sum()):,} loss-making"), unsafe_allow_html=True)
+k[4].markdown(kpi("Profit on late orders", money(late_df["Profit"].sum() if 'Profit' in late_df else 0),
+                  f"{int((late_df['Profit'] < 0).sum()) if 'Profit' in late_df else 0:,} loss-making"), unsafe_allow_html=True)
 st.write("")
 
 tab_agent, tab_overview, tab_model = st.tabs(["Agent", "Overview", "Risk predictor"])
@@ -641,14 +667,14 @@ with tab_overview:
             t = rate_table(view, "Shipping Mode").sort_values("Late_rate", ascending=False)
             fig = px.bar(t, x="Shipping Mode", y="Late_rate", text=t["Late_rate"].map("{:.0%}".format))
             fig.update_traces(marker_color=[RISK if i == 0 else BRAND for i in range(len(t))], textposition="outside")
-            fig.add_hline(y=n_late / n, line_dash="dot", line_color=MUTED,
+            fig.add_hline(y=n_late / n if n else 0, line_dash="dot", line_color=MUTED,
                           annotation_text="Overall", annotation_position="top left")
             fig.update_yaxes(tickformat=".0%", title=None, range=[0, min(1.05, t["Late_rate"].max() * 1.2)])
             fig.update_xaxes(title=None)
             st.plotly_chart(style_fig(fig), key="ov-mode")
     with c2:
         st.markdown("#### Days late or early")
-        if view["Delay"].notna().any():
+        if "Delay" in view and view["Delay"].notna().any():
             fig = px.histogram(view, x="Delay", color="Delivery Status", nbins=12,
                                color_discrete_sequence=[RISK, OK, BRAND, WARN])
             fig.update_layout(bargap=0.05)
@@ -714,3 +740,8 @@ with tab_model:
                 st.error(f"⚠️ **High Late Delivery Risk ({prob:.1%})** — Recommended to switch shipping mode or add buffer stock.")
             else:
                 st.success(f"✅ **Low Risk ({prob:.1%})** — Order projected to arrive on time.")
+
+if uploaded is None and data_key.startswith("demo"):
+    st.info("ℹ️ Demo data is running. Upload your DataCo CSV from the sidebar whenever you are ready.")
+else:
+    st.success(f"✅ Active dataset loaded: {len(view):,} orders")
